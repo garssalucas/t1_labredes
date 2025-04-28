@@ -2,11 +2,13 @@ package labredes;
 
 import java.net.*;
 import java.util.Scanner;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class UDPNode {
-    private static final int PORT = 8080; // porta fixa dentro dos containers
+    private static final int PORT = 8080;
     private static String deviceName;
     private static DeviceManager deviceManager = new DeviceManager();
+    private static AtomicInteger messageId = new AtomicInteger(1); // ID global sequencial
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
@@ -53,7 +55,7 @@ public class UDPNode {
                 socket.receive(packet);
 
                 String recebido = new String(packet.getData(), 0, packet.getLength());
-                processarMensagem(recebido, packet.getAddress(), packet.getPort());
+                processarMensagem(recebido, packet.getAddress(), packet.getPort(), socket);
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -66,8 +68,7 @@ public class UDPNode {
             try {
                 String mensagem = "HEARTBEAT:" + deviceName;
                 byte[] data = mensagem.getBytes();
-                DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("255.255.255.255"),
-                        PORT);
+                DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("255.255.255.255"), PORT);
                 socket.send(packet);
                 Thread.sleep(5000);
             } catch (Exception e) {
@@ -76,17 +77,42 @@ public class UDPNode {
         }
     }
 
-    private static void processarMensagem(String mensagem, InetAddress remetente, int porta) {
+    private static void processarMensagem(String mensagem, InetAddress remetente, int porta, DatagramSocket socket) {
         if (mensagem.startsWith("HEARTBEAT:")) {
             String nome = mensagem.substring(10);
             deviceManager.addOrUpdateDevice(nome, new Device(nome, remetente, porta));
-        } else {
-            // Tratamento de mensagem normal: separar remetente e conteúdo
-            String[] parts = mensagem.split(":", 2);
-            String senderName = parts.length > 1 ? parts[0] : "Desconhecido";
-            String realMessage = parts.length > 1 ? parts[1].trim() : mensagem;
+        } else if (mensagem.startsWith("TALK:")) {
+            String[] parts = mensagem.split(":", 4);
+            if (parts.length >= 4) {
+                int id = Integer.parseInt(parts[1]);
+                String senderName = parts[2];
+                String realMessage = parts[3];
 
-            System.out.println("[Recebido] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
+                System.out.println("[Recebido(id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
+
+                // enviar ACK
+                sendAck(senderName, id, remetente, porta, socket);
+            }
+        } else if (mensagem.startsWith("ACK:")) {
+            String[] parts = mensagem.split(":", 3);
+            if (parts.length >= 3) {
+                int id = Integer.parseInt(parts[1]);
+                String senderName = parts[2];
+                System.out.println("[Recebido ACK(id:" + id + ")] de " + senderName);
+            }
+        } else {
+            System.out.println("[Mensagem desconhecida] " + mensagem);
+        }
+    }
+
+    private static void sendAck(String destino, int id, InetAddress ipDestino, int portaDestino, DatagramSocket socket) {
+        try {
+            String ack = "ACK:" + id + ":" + deviceName;
+            byte[] data = ack.getBytes();
+            DatagramPacket packet = new DatagramPacket(data, data.length, ipDestino, portaDestino);
+            socket.send(packet);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -112,12 +138,12 @@ public class UDPNode {
                 System.out.println("Destino não encontrado.");
                 return;
             }
-            // Agora inclui o nome do dispositivo no início da mensagem
-            String mensagemCompleta = deviceName + ": " + mensagem;
+            int id = messageId.getAndIncrement(); // pega o próximo id e incrementa
+            String mensagemCompleta = "TALK:" + id + ":" + deviceName + ":" + mensagem;
             byte[] data = mensagemCompleta.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
-            System.out.println("[Enviado] para " + device.getName());
+            System.out.println("[Enviado(id:" + id + ")] para " + device.getName());
         } catch (Exception e) {
             e.printStackTrace();
         }
