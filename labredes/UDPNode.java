@@ -1,5 +1,6 @@
 package labredes;
 
+import java.io.File;
 import java.net.*;
 import java.util.Collections;
 import java.util.HashMap;
@@ -75,7 +76,8 @@ public class UDPNode {
             try {
                 String mensagem = "HEARTBEAT:" + deviceName;
                 byte[] data = mensagem.getBytes();
-                DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("255.255.255.255"), PORT);
+                DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("255.255.255.255"),
+                        PORT);
                 socket.send(packet);
                 Thread.sleep(5000);
             } catch (Exception e) {
@@ -100,9 +102,27 @@ public class UDPNode {
                     return;
                 }
 
-                System.out.println("[Recebido (id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
+                System.out.println("[Recebido (id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress()
+                        + "): " + realMessage);
 
                 // enviar ACK
+                sendAck(id, remetente, porta, socket);
+            }
+        } else if (mensagem.startsWith("FILE:")) {
+            String[] parts = mensagem.split(":", 4);
+            if (parts.length >= 4) {
+                int id = Integer.parseInt(parts[1]);
+                String nomeArquivo = parts[2];
+                long tamanho = Long.parseLong(parts[3]);
+        
+                if (mensagemDuplicada(id)) {
+                    System.out.println("[FALHA] FILE duplicado (id:" + id + ")");
+                    return;
+                }
+        
+                System.out.println("[FILE recebido (id:" + id + ")] Arquivo: " + nomeArquivo + ", Tamanho: " + tamanho + " bytes");
+        
+                // Aqui é onde futuramente criaremos o arquivo vazio
                 sendAck(id, remetente, porta, socket);
             }
         } else if (mensagem.startsWith("ACK:")) {
@@ -136,10 +156,15 @@ public class UDPNode {
             String destino = partes[1];
             String mensagem = partes[2];
             enviarMensagem(destino, mensagem, socket);
+        } else if (partes[0].equalsIgnoreCase("sendfile") && partes.length >= 3) {
+            String destino = partes[1];
+            String nomeArquivo = partes[2];
+            iniciarEnvioArquivo(destino, nomeArquivo, socket);
         } else {
             System.out.println("Comandos disponíveis:");
             System.out.println("  devices                    (listar dispositivos)");
             System.out.println("  talk <destino> <mensagem>   (enviar mensagem)");
+            System.out.println("  sendfile <destino> <arquivo>   (enviar mensagem)");
         }
     }
 
@@ -161,12 +186,41 @@ public class UDPNode {
         }
     }
 
+    private static void iniciarEnvioArquivo(String destino, String nomeArquivo, DatagramSocket socket) {
+        try {
+            File file = new File("arquivos/" + nomeArquivo);
+            if (!file.exists()) {
+                System.out.println("[ERRO] Arquivo não encontrado: " + nomeArquivo);
+                return;
+            }
+
+            Device device = deviceManager.getDevice(destino);
+            if (device == null) {
+                System.out.println("[ERRO] Destino não encontrado.");
+                return;
+            }
+
+            int id = messageId.getAndIncrement();
+            long tamanho = file.length();
+            String mensagemFile = "FILE:" + id + ":" + nomeArquivo + ":" + tamanho;
+
+            byte[] data = mensagemFile.getBytes();
+            DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
+            socket.send(packet);
+
+            System.out.println("[FILE enviado (id:" + id + ")] " + nomeArquivo + " (" + tamanho + " bytes)");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     private static boolean mensagemDuplicada(int id) {
         long agora = System.currentTimeMillis();
-        
+
         // Limpa IDs expirados antes de checar
         idsRecebidos.entrySet().removeIf(entry -> (agora - entry.getValue()) > TEMPO_EXPIRACAO_IDS_MS);
-    
+
         if (idsRecebidos.containsKey(id)) {
             // ID já recebido, é duplicado
             return true;
