@@ -1,14 +1,21 @@
 package labredes;
 
 import java.net.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class UDPNode {
     private static final int PORT = 8080;
     private static String deviceName;
-    private static DeviceManager deviceManager = new DeviceManager();
-    private static AtomicInteger messageId = new AtomicInteger(1); // ID global sequencial
+    private static final DeviceManager deviceManager = new DeviceManager();
+    private static final AtomicInteger messageId = new AtomicInteger(1); // ID global sequencial
+
+    // Controle de mensagens já recebidas para evitar processamento duplicado
+    private static final Map<Integer, Long> idsRecebidos = Collections.synchronizedMap(new HashMap<>());
+    private static final long TEMPO_EXPIRACAO_IDS_MS = 5 * 60 * 1000; // 5 minutos
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
@@ -88,24 +95,29 @@ public class UDPNode {
                 String senderName = parts[2];
                 String realMessage = parts[3];
 
-                System.out.println("[Recebido(id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
+                if (mensagemDuplicada(id)) {
+                    System.out.println("[FALHA] Mensagem duplicada detectada (id:" + id + ")");
+                    return;
+                }
+
+                System.out.println("[Recebido (id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
 
                 // enviar ACK
-                sendAck(senderName, id, remetente, porta, socket);
+                sendAck(id, remetente, porta, socket);
             }
         } else if (mensagem.startsWith("ACK:")) {
             String[] parts = mensagem.split(":", 3);
             if (parts.length >= 3) {
                 int id = Integer.parseInt(parts[1]);
                 String senderName = parts[2];
-                System.out.println("[Recebido ACK(id:" + id + ")] de " + senderName);
+                System.out.println("[Recebido ACK (id:" + id + ")] de " + senderName);
             }
         } else {
             System.out.println("[Mensagem desconhecida] " + mensagem);
         }
     }
 
-    private static void sendAck(String destino, int id, InetAddress ipDestino, int portaDestino, DatagramSocket socket) {
+    private static void sendAck(int id, InetAddress ipDestino, int portaDestino, DatagramSocket socket) {
         try {
             String ack = "ACK:" + id + ":" + deviceName;
             byte[] data = ack.getBytes();
@@ -118,14 +130,14 @@ public class UDPNode {
 
     private static void tratarComando(String linha, DatagramSocket socket) {
         String[] partes = linha.split(" ", 3);
-        if (partes[0].equals("devices")) {
+        if (partes[0].equalsIgnoreCase("devices")) {
             deviceManager.listDevices(deviceName);
-        } else if (partes[0].equals("talk") && partes.length >= 3) {
+        } else if (partes[0].equalsIgnoreCase("talk") && partes.length >= 3) {
             String destino = partes[1];
             String mensagem = partes[2];
             enviarMensagem(destino, mensagem, socket);
         } else {
-            System.out.println("Comandos:");
+            System.out.println("Comandos disponíveis:");
             System.out.println("  devices                    (listar dispositivos)");
             System.out.println("  talk <destino> <mensagem>   (enviar mensagem)");
         }
@@ -143,9 +155,25 @@ public class UDPNode {
             byte[] data = mensagemCompleta.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
-            System.out.println("[Enviado(id:" + id + ")] para " + device.getName());
+            System.out.println("[Enviado (id:" + id + ")] para " + device.getName());
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private static boolean mensagemDuplicada(int id) {
+        long agora = System.currentTimeMillis();
+        
+        // Limpa IDs expirados antes de checar
+        idsRecebidos.entrySet().removeIf(entry -> (agora - entry.getValue()) > TEMPO_EXPIRACAO_IDS_MS);
+    
+        if (idsRecebidos.containsKey(id)) {
+            // ID já recebido, é duplicado
+            return true;
+        } else {
+            // Novo ID, registra
+            idsRecebidos.put(id, agora);
+            return false;
         }
     }
 }
