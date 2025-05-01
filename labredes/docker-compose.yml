@@ -1,0 +1,45 @@
+version: '3.9'
+
+services:
+  d1:
+    image: labredes
+    container_name: D1
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    ports:
+      - "8081:8080"
+    networks:
+      - lab
+    volumes:
+      - /home/lucas/redes:/home
+      
+  d2:
+    image: labredes
+    container_name: D2
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    ports:
+      - "8082:8080"
+    networks:
+      - lab
+    volumes:
+      - /home/lucas/redes:/home
+      
+  d3:
+    image: labredes
+    container_name: D3
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    ports:
+      - "8083:8080"
+    networks:
+      - lab
+    volumes:
+      - /home/lucas/redes:/home
+       
+networks:
+  lab:
+    external: true
