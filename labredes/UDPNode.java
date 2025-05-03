@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Arrays;
 import java.util.Base64;
@@ -14,22 +15,25 @@ public class UDPNode {
     private static final int PORT = 8080;
     private static String deviceName;
     private static final DeviceManager deviceManager = new DeviceManager();
-    private static final AtomicInteger messageId = new AtomicInteger(1); // ID global sequencial
+    private static final AtomicInteger messageId = new AtomicInteger(1);
     private static final Map<Integer, String> nomesArquivosRecebidos = new HashMap<>();
-
-    // Controle de mensagens já recebidas para evitar processamento duplicado
     private static final Map<String, Long> idsRecebidos = Collections.synchronizedMap(new HashMap<>());
-    private static final long TEMPO_EXPIRACAO_IDS_MS = 5 * 60 * 1000; // 5 minutos
+    private static final long TEMPO_EXPIRACAO_IDS_MS = 5 * 60 * 1000;
+    private static final Map<String, Boolean> acksRecebidos = new ConcurrentHashMap<>();
+    private static final Map<String, byte[]> chunksPendentes = new ConcurrentHashMap<>();
+    private static final Map<String, Long> tempoEnvioChunk = new ConcurrentHashMap<>();
+    private static final Map<Integer, String> tipoMensagemEnviada = new ConcurrentHashMap<>(); 
+    private static final java.time.format.DateTimeFormatter FORMATTER = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
-            System.out.println("Uso: java UDPNode <nome_dispositivo>");
+            log("Uso: java UDPNode <nome_dispositivo>");
             return;
         }
         deviceName = args[0];
 
         DatagramSocket socket = new DatagramSocket(PORT);
-        System.out.println("[" + deviceName + "] escutando na porta " + PORT);
+        log("[" + deviceName + "] escutando na porta " + PORT);
 
         new Thread(() -> listen(socket)).start();
         new Thread(() -> heartbeat(socket)).start();
@@ -43,6 +47,8 @@ public class UDPNode {
                 }
             }
         }).start();
+
+        new Thread(() -> monitorarAcks(socket)).start();
 
         Scanner scanner = new Scanner(System.in);
         while (true) {
@@ -82,6 +88,44 @@ public class UDPNode {
         }
     }
 
+    private static void monitorarAcks(DatagramSocket socket) {
+        while (true) {
+            try {
+                for (Map.Entry<String, byte[]> entry : chunksPendentes.entrySet()) {
+                    String chave = entry.getKey(); // CHUNK-<id>-<seq>-<destino>
+                    byte[] dados = entry.getValue();
+                    String[] partes = chave.split("-");
+    
+                    int id = Integer.parseInt(partes[1]);
+                    int seq = Integer.parseInt(partes[2]);
+                    String destino = partes[3];
+    
+                    String ackKey = "ACK-" + id + "-" + seq;
+                    long tempoEnviado = tempoEnvioChunk.getOrDefault(chave, 0L);
+    
+                    if (!acksRecebidos.getOrDefault(ackKey, false) &&
+                        (System.currentTimeMillis() - tempoEnviado) >= 1000) {
+    
+                        tempoEnvioChunk.put(chave, System.currentTimeMillis());
+                        Device device = deviceManager.getDevice(destino);
+                        if (device != null) {
+                            DatagramPacket packet = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
+                            socket.send(packet);
+                            log("[RETRANSMISSÃO] CHUNK id=" + id + " seq=" + seq);
+                        }
+    
+                    } else if (acksRecebidos.getOrDefault(ackKey, false)) {
+                        chunksPendentes.remove(chave);
+                        tempoEnvioChunk.remove(chave);
+                    }
+                }
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
     private static void processarMensagem(String mensagem, InetAddress remetente, int porta, DatagramSocket socket) {
         if (mensagem.startsWith("HEARTBEAT:")) {
             String nome = mensagem.substring(10);
@@ -94,46 +138,51 @@ public class UDPNode {
                 String realMessage = parts[3];
 
                 if (mensagemDuplicada("TALK-" + id)) {
-                    System.out.println("[FALHA] Mensagem duplicada detectada (id:" + id + ")");
+                    log("[FALHA] TALK Mensagem duplicada detectada (id:" + id + ")");
                     return;
                 }
 
-                System.out.println("[Recebido (id:" + id + ")] de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
-                sendAck(id, remetente, porta, socket);
+                log("[TALK Recebido] id=" + id + " de " + senderName + " (" + remetente.getHostAddress() + "): " + realMessage);
+                sendAck(id, -1, remetente, porta, socket);
             }
         } else if (mensagem.startsWith("ACK:")) {
-            String[] parts = mensagem.split(":", 3);
-            if (parts.length >= 3) {
-                int id = Integer.parseInt(parts[1]);
-                String senderName = parts[2];
-                System.out.println("[Recebido ACK (id:" + id + ")] de " + senderName);
-            }
-        } else if (mensagem.startsWith("FILE:")) {
-            String[] parts = mensagem.split(":", 4);
-            if (parts.length >= 4) {
-                int id = Integer.parseInt(parts[1]);
-                String nomeArquivo = parts[2];
-                long tamanho = Long.parseLong(parts[3]);
-
-                if (mensagemDuplicada("FILE-" + id)) {
-                    System.out.println("[FALHA] FILE duplicado (id:" + id + ")");
-                    return;
-                }
-
-                System.out.println("[FILE recebido (id:" + id + ")] Arquivo: " + nomeArquivo + ", Tamanho: " + tamanho + " bytes");
-                nomesArquivosRecebidos.put(id, nomeArquivo);
-                sendAck(id, remetente, porta, socket);
-            }
-        } else if (mensagem.startsWith("CHUNK:")) {
             String[] parts = mensagem.split(":", 4);
             if (parts.length >= 4) {
                 int id = Integer.parseInt(parts[1]);
                 int seq = Integer.parseInt(parts[2]);
+                String senderName = parts[3];
+                String chaveAck = "ACK-" + id + "-" + seq;
+                acksRecebidos.put(chaveAck, true);
+                String referencia = tipoMensagemEnviada.getOrDefault(id, "DESCONHECIDO");
+                log("[ACK Recebido] " + referencia + " id=" + id + " seq=" + seq + " de " + senderName);
+            }
+        } else if (mensagem.startsWith("FILE:")) {
+            String[] parts = mensagem.split(":", 5);
+            if (parts.length >= 5) {
+                int id = Integer.parseInt(parts[1]);
+                String nomeArquivo = parts[2];
+                long tamanho = Long.parseLong(parts[3]);
+                String nomeRemetente = parts[4];
+                if (mensagemDuplicada("FILE-" + id)) {
+                    log("[FALHA] FILE duplicado (id:" + id + ")");
+                    return;
+                }
+
+                log("[FILE recebido] id=" + id + " Arquivo: " + nomeArquivo + ", Tamanho: " + tamanho + " bytes de " + nomeRemetente);
+                nomesArquivosRecebidos.put(id, nomeArquivo);
+                sendAck(id, -1, remetente, porta, socket);
+            }
+        } else if (mensagem.startsWith("CHUNK:")) {
+            String[] parts = mensagem.split(":", 5);
+            if (parts.length >= 5) {
+                int id = Integer.parseInt(parts[1]);
+                int seq = Integer.parseInt(parts[2]);
                 String dadosBase64 = parts[3];
+                String nomeRemetente = parts[4];
 
                 String chave = "CHUNK-" + id + "-" + seq;
                 if (mensagemDuplicada(chave)) {
-                    System.out.println("[FALHA] CHUNK duplicado (id:" + id + ", seq:" + seq + ")");
+                    log("[FALHA] CHUNK duplicado (id:" + id + ", seq:" + seq + ")");
                     return;
                 }
 
@@ -146,21 +195,21 @@ public class UDPNode {
                     FileOutputStream out = new FileOutputStream("arquivos_recebidos/" + nomeOriginal, true);
                     out.write(dadosBytes);
                     out.close();
-
-                    System.out.println("[CHUNK recebido] id=" + id + " seq=" + seq + " (" + dadosBytes.length + " bytes)");
-                    sendAck(id, remetente, porta, socket); 
+                    
+                    log("[CHUNK recebido] id=" + id + " seq=" + seq + " (" + dadosBytes.length + " bytes) de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
+                    sendAck(id, seq, remetente, porta, socket);
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
             }
         } else {
-            System.out.println("[Mensagem desconhecida] " + mensagem);
+            log("[Mensagem desconhecida] " + mensagem);
         }
     }
 
-    private static void sendAck(int id, InetAddress ipDestino, int portaDestino, DatagramSocket socket) {
+    private static void sendAck(int id, int seq, InetAddress ipDestino, int portaDestino, DatagramSocket socket) {
         try {
-            String ack = "ACK:" + id + ":" + deviceName;
+            String ack = "ACK:" + id + ":" + seq + ":" + deviceName;
             byte[] data = ack.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, ipDestino, portaDestino);
             socket.send(packet);
@@ -193,15 +242,16 @@ public class UDPNode {
         try {
             Device device = deviceManager.getDevice(destino);
             if (device == null) {
-                System.out.println("Destino não encontrado.");
+                log("Destino não encontrado.");
                 return;
             }
             int id = messageId.getAndIncrement();
             String mensagemCompleta = "TALK:" + id + ":" + deviceName + ":" + mensagem;
+            tipoMensagemEnviada.put(id, "TALK");
             byte[] data = mensagemCompleta.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
-            System.out.println("[Enviado (id:" + id + ")] para " + device.getName());
+            log("[TALK Enviado] id=" + id + " para " + device.getName());
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -211,25 +261,25 @@ public class UDPNode {
         try {
             File file = new File("arquivos/" + nomeArquivo);
             if (!file.exists()) {
-                System.out.println("[ERRO] Arquivo não encontrado: " + nomeArquivo);
+                log("[ERRO] Arquivo não encontrado: " + nomeArquivo);
                 return;
             }
 
             Device device = deviceManager.getDevice(destino);
             if (device == null) {
-                System.out.println("[ERRO] Destino não encontrado.");
+                log("[ERRO] Destino não encontrado.");
                 return;
             }
 
             int id = messageId.getAndIncrement();
             long tamanho = file.length();
-            String mensagemFile = "FILE:" + id + ":" + nomeArquivo + ":" + tamanho;
-
+            String mensagemFile = "FILE:" + id + ":" + nomeArquivo + ":" + tamanho + ":" + deviceName;
+            tipoMensagemEnviada.put(id, "FILE");
             byte[] data = mensagemFile.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
 
-            System.out.println("[FILE enviado (id:" + id + ")] " + nomeArquivo + " (" + tamanho + " bytes)");
+            log("[FILE enviado] id=" + id + " - " + nomeArquivo + " (" + tamanho + " bytes)");
 
             int seq = 0;
             int tamBloco = 1024;
@@ -239,17 +289,21 @@ public class UDPNode {
                 while ((lido = in.read(buffer)) != -1) {
                     byte[] chunkData = (lido == tamBloco) ? buffer : Arrays.copyOf(buffer, lido);
                     String dadosBase64 = Base64.getEncoder().encodeToString(chunkData);
-                    String mensagemChunk = "CHUNK:" + id + ":" + seq + ":" + dadosBase64;
+                    String mensagemChunk = "CHUNK:" + id + ":" + seq + ":" + dadosBase64 + ":" + deviceName;
 
                     byte[] dados = mensagemChunk.getBytes();
                     DatagramPacket packetChunk = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
+                    tipoMensagemEnviada.put(id, "CHUNK");
+                    String chave = "ACK-" + id + "-" + seq;
+                    chunksPendentes.put("CHUNK-" + id + "-" + seq + "-" + destino, dados);
+                    acksRecebidos.put(chave, false);
+                    tempoEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, System.currentTimeMillis());
                     socket.send(packetChunk);
-
-                    System.out.println("[CHUNK enviado] id=" + id + " seq=" + seq);
+                    log("[CHUNK enviado] id=" + id + " seq=" + seq);
                     seq++;
                     Thread.sleep(50);
                 }
-            } catch (IOException e) {
+            } catch (IOException | InterruptedException e) {
                 e.printStackTrace();
             }
 
@@ -268,5 +322,10 @@ public class UDPNode {
             idsRecebidos.put(chave, agora);
             return false;
         }
+    }
+
+    private static void log(String mensagem) {
+        String timestamp = java.time.LocalTime.now().format(FORMATTER);
+        System.out.println("[" + timestamp + "] " + mensagem);
     }
 }
