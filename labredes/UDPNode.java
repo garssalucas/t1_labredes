@@ -22,7 +22,7 @@ public class UDPNode {
     private static final Map<String, Boolean> acksRecebidos = new ConcurrentHashMap<>();
     private static final Map<String, byte[]> chunksPendentes = new ConcurrentHashMap<>();
     private static final Map<String, Long> tempoEnvioChunk = new ConcurrentHashMap<>();
-    private static final Map<Integer, String> tipoMensagemEnviada = new ConcurrentHashMap<>(); 
+    private static final Map<String, String> tipoMensagemEnviada = new ConcurrentHashMap<>();
     private static final java.time.format.DateTimeFormatter FORMATTER = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     public static void main(String[] args) throws Exception {
@@ -153,8 +153,8 @@ public class UDPNode {
                 String senderName = parts[3];
                 String chaveAck = "ACK-" + id + "-" + seq;
                 acksRecebidos.put(chaveAck, true);
-                String referencia = tipoMensagemEnviada.getOrDefault(id, "DESCONHECIDO");
-                log("[ACK Recebido] " + referencia + " id=" + id + " seq=" + seq + " de " + senderName);
+                String referencia = tipoMensagemEnviada.getOrDefault(id + ":" + seq, "DESCONHECIDO");
+                log("[ACK Recebido] " + referencia + " id=" + id + " seq=" + seq + " de " + senderName + " (" + remetente.getHostAddress() + ")");
             }
         } else if (mensagem.startsWith("FILE:")) {
             String[] parts = mensagem.split(":", 5);
@@ -168,7 +168,7 @@ public class UDPNode {
                     return;
                 }
 
-                log("[FILE recebido] id=" + id + " Arquivo: " + nomeArquivo + ", Tamanho: " + tamanho + " bytes de " + nomeRemetente);
+                log("[FILE recebido] id=" + id + " Arquivo: " + nomeArquivo + ", Tamanho: " + tamanho + " bytes de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
                 nomesArquivosRecebidos.put(id, nomeArquivo);
                 sendAck(id, -1, remetente, porta, socket);
             }
@@ -247,7 +247,7 @@ public class UDPNode {
             }
             int id = messageId.getAndIncrement();
             String mensagemCompleta = "TALK:" + id + ":" + deviceName + ":" + mensagem;
-            tipoMensagemEnviada.put(id, "TALK");
+            tipoMensagemEnviada.put(id + ":-1", "TALK");
             byte[] data = mensagemCompleta.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
@@ -274,7 +274,7 @@ public class UDPNode {
             int id = messageId.getAndIncrement();
             long tamanho = file.length();
             String mensagemFile = "FILE:" + id + ":" + nomeArquivo + ":" + tamanho + ":" + deviceName;
-            tipoMensagemEnviada.put(id, "FILE");
+            tipoMensagemEnviada.put(id + ":-1", "FILE");
             byte[] data = mensagemFile.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
@@ -293,7 +293,7 @@ public class UDPNode {
 
                     byte[] dados = mensagemChunk.getBytes();
                     DatagramPacket packetChunk = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
-                    tipoMensagemEnviada.put(id, "CHUNK");
+                    tipoMensagemEnviada.put(id + ":" + seq, "CHUNK");
                     String chave = "ACK-" + id + "-" + seq;
                     chunksPendentes.put("CHUNK-" + id + "-" + seq + "-" + destino, dados);
                     acksRecebidos.put(chave, false);
