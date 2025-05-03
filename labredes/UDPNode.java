@@ -293,12 +293,23 @@ public class UDPNode {
             socket.send(packet);
 
             log("[FILE enviado] id=" + id + " -> " + nomeArquivo + " (" + tamanho + " bytes)");
+            
+            int tentativas = 0;
+            while (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false) && tentativas < 20) {
+                Thread.sleep(100); 
+                tentativas++;
+            }
+            if (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false)) {
+                log("[ERRO] ACK do FILE id=" + id + " não recebido. Abortando envio.");
+                return;
+            }
 
             int seq = 0;
             int tamBloco = 1024;
             try (InputStream in = new FileInputStream(file)) {
                 byte[] buffer = new byte[tamBloco];
                 int lido;
+                long totalLido = 0;
                 while ((lido = in.read(buffer)) != -1) {
                     byte[] chunkData = (lido == tamBloco) ? buffer : Arrays.copyOf(buffer, lido);
                     String dadosBase64 = Base64.getEncoder().encodeToString(chunkData);
@@ -313,7 +324,9 @@ public class UDPNode {
                     acksRecebidos.put(chave, false);
                     tempoEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, System.currentTimeMillis());
                     socket.send(packetChunk);
-                    log("[CHUNK enviado] id=" + id + " seq=" + seq);
+                    totalLido += lido;
+                    int percentual = (int) ((100.0 * totalLido) / tamanho);
+                    log("[CHUNK enviado] id=" + id + " seq=" + seq + " (" + percentual + "% enviado)");
                     seq++;
                     Thread.sleep(50);
                 }
