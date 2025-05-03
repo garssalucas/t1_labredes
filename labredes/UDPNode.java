@@ -204,9 +204,10 @@ public class UDPNode {
                 try {
                     byte[] dadosBytes = Base64.getDecoder().decode(dadosBase64);
                     String nomeOriginal = nomesArquivosRecebidos.getOrDefault(id, "temp_" + id + ".part");
-                    FileOutputStream out = new FileOutputStream("arquivos_recebidos/" + nomeOriginal, true);
-                    out.write(dadosBytes);
-                    out.close();
+                    RandomAccessFile raf = new RandomAccessFile("arquivos_recebidos/" + nomeOriginal, "rw");
+                    raf.seek(seq * 1024L); // pula até a posição correta do bloco
+                    raf.write(dadosBytes);
+                    raf.close();
                     
                     log("[CHUNK recebido] id=" + id + " seq=" + seq + " (" + dadosBytes.length + " bytes) de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
                     sendAck(id, seq, remetente, porta, socket);
@@ -291,7 +292,7 @@ public class UDPNode {
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
 
-            log("[FILE enviado] id=" + id + " - " + nomeArquivo + " (" + tamanho + " bytes)");
+            log("[FILE enviado] id=" + id + " -> " + nomeArquivo + " (" + tamanho + " bytes)");
 
             int seq = 0;
             int tamBloco = 1024;
