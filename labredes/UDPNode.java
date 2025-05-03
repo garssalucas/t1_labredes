@@ -13,6 +13,7 @@ import java.io.*;
 
 public class UDPNode {
     private static final int PORT = 8080;
+    private static final int MAX_TENTATIVAS = 5;
     private static String deviceName;
     private static final DeviceManager deviceManager = new DeviceManager();
     private static final AtomicInteger messageId = new AtomicInteger(1);
@@ -23,6 +24,7 @@ public class UDPNode {
     private static final Map<String, byte[]> chunksPendentes = new ConcurrentHashMap<>();
     private static final Map<String, Long> tempoEnvioChunk = new ConcurrentHashMap<>();
     private static final Map<String, String> tipoMensagemEnviada = new ConcurrentHashMap<>();
+    private static final Map<String, Integer> tentativasEnvioChunk = new ConcurrentHashMap<>();
     private static final java.time.format.DateTimeFormatter FORMATTER = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     public static void main(String[] args) throws Exception {
@@ -102,21 +104,31 @@ public class UDPNode {
     
                     String ackKey = "ACK-" + id + "-" + seq;
                     long tempoEnviado = tempoEnvioChunk.getOrDefault(chave, 0L);
-    
-                    if (!acksRecebidos.getOrDefault(ackKey, false) &&
-                        (System.currentTimeMillis() - tempoEnviado) >= 1000) {
-    
-                        tempoEnvioChunk.put(chave, System.currentTimeMillis());
-                        Device device = deviceManager.getDevice(destino);
-                        if (device != null) {
-                            DatagramPacket packet = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
-                            socket.send(packet);
-                            log("[RETRANSMISSÃO] CHUNK id=" + id + " seq=" + seq);
+                    int tentativas = tentativasEnvioChunk.getOrDefault(chave, 0);
+
+                    if (!acksRecebidos.getOrDefault(ackKey, false)) {
+                        if (tentativas >= MAX_TENTATIVAS) {
+                            log("[ERRO] Falha ao enviar CHUNK id=" + id + " seq=" + seq + " após " + MAX_TENTATIVAS + " tentativas.");
+                            chunksPendentes.remove(chave);
+                            tempoEnvioChunk.remove(chave);
+                            tentativasEnvioChunk.remove(chave);
+                            continue;
                         }
-    
-                    } else if (acksRecebidos.getOrDefault(ackKey, false)) {
+
+                        if ((System.currentTimeMillis() - tempoEnviado) >= 1000) {
+                            tempoEnvioChunk.put(chave, System.currentTimeMillis());
+                            tentativasEnvioChunk.put(chave, tentativas + 1);
+                            Device device = deviceManager.getDevice(destino);
+                            if (device != null) {
+                                DatagramPacket packet = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
+                                socket.send(packet);
+                                log("[RETRANSMISSÃO] CHUNK id=" + id + " seq=" + seq + " (tentativa " + (tentativas + 1) + ")");
+                            }
+                        }
+                    } else {
                         chunksPendentes.remove(chave);
                         tempoEnvioChunk.remove(chave);
+                        tentativasEnvioChunk.remove(chave);
                     }
                 }
                 Thread.sleep(5000);
@@ -296,6 +308,7 @@ public class UDPNode {
                     tipoMensagemEnviada.put(id + ":" + seq, "CHUNK");
                     String chave = "ACK-" + id + "-" + seq;
                     chunksPendentes.put("CHUNK-" + id + "-" + seq + "-" + destino, dados);
+                    tentativasEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, 0);
                     acksRecebidos.put(chave, false);
                     tempoEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, System.currentTimeMillis());
                     socket.send(packetChunk);
