@@ -201,19 +201,67 @@ public class UDPNode {
                 File pasta = new File("arquivos_recebidos");
                 if (!pasta.exists()) pasta.mkdirs();
 
+                byte[] dadosBytes;
                 try {
-                    byte[] dadosBytes = Base64.getDecoder().decode(dadosBase64);
-                    String nomeOriginal = nomesArquivosRecebidos.getOrDefault(id, "temp_" + id + ".part");
-                    RandomAccessFile raf = new RandomAccessFile("arquivos_recebidos/" + nomeOriginal, "rw");
-                    raf.seek(seq * 1024L); // pula até a posição correta do bloco
-                    raf.write(dadosBytes);
-                    raf.close();
-                    
-                    log("[CHUNK recebido] id=" + id + " seq=" + seq + " (" + dadosBytes.length + " bytes) de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
-                    sendAck(id, seq, remetente, porta, socket);
-                } catch (IOException e) {
-                    e.printStackTrace();
+                    dadosBytes = Base64.getDecoder().decode(dadosBase64);
+                } catch (IllegalArgumentException e) {
+                    log("[ERRO] Falha ao decodificar CHUNK id=" + id + " seq=" + seq + " de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
+                    sendNack(id, "CHUNK inválido (base64)", remetente, porta, socket);
+                    return;
                 }
+
+                String nomeOriginal = nomesArquivosRecebidos.getOrDefault(id, "temp_" + id + ".part");
+                File arquivoDestino = new File("arquivos_recebidos/" + nomeOriginal);
+
+                try (RandomAccessFile raf = new RandomAccessFile(arquivoDestino, "rw")) {
+                    raf.seek(seq * 1024L);
+                    raf.write(dadosBytes);
+                } catch (IOException e) {
+                    log("[ERRO] Falha ao gravar CHUNK id=" + id + " seq=" + seq + ": " + " de " + nomeRemetente + " (" + remetente.getHostAddress() + ")" + e.getMessage());
+                    sendNack(id, "Falha ao gravar CHUNK seq=" + seq, remetente, porta, socket);
+                    return;
+                }
+
+                log("[CHUNK recebido] id=" + id + " seq=" + seq + " (" + dadosBytes.length + " bytes) de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
+                sendAck(id, seq, remetente, porta, socket);
+            }
+        } else if (mensagem.startsWith("END:")) {
+            String[] parts = mensagem.split(":", 4);
+            if (parts.length >= 4) {
+                int id = Integer.parseInt(parts[1]);
+                String hashRecebido = parts[2];
+                String nomeRemetente = parts[3];
+        
+                String nomeArquivo = nomesArquivosRecebidos.get(id);
+                if (nomeArquivo == null) {
+                    log("[ERRO] Arquivo para id=" + id + " não encontrado. Enviando NACK.");
+                    sendNack(id, "Arquivo não encontrado", remetente, porta, socket);
+                    return;
+                }
+        
+                File arquivo = new File("arquivos_recebidos/" + nomeArquivo);
+                if (!arquivo.exists()) {
+                    log("[ERRO] Arquivo físico não encontrado: " + nomeArquivo + ". Enviando NACK.");
+                    sendNack(id, "Arquivo não existe no disco", remetente, porta, socket);
+                    return;
+                }
+        
+                String hashCalculado = calcularHashArquivo(arquivo);
+                if (hashCalculado.equals(hashRecebido)) {
+                    log("[END recebido] id=" + id + " hash verificado com sucesso de " + nomeRemetente + "("+ remetente.getHostAddress() + ")");
+                    sendAck(id, -1, remetente, porta, socket); // ACK do END
+                } else {
+                    log("[ERRO] Hash divergente para id=" + id + ". Esperado: " + hashRecebido + " / Calculado: " + hashCalculado );
+                    arquivo.delete(); // remove arquivo corrompido
+                    sendNack(id, "Hash inválido. Arquivo corrompido", remetente, porta, socket);
+                }
+            }
+        } else if (mensagem.startsWith("NACK:")) {
+            String[] parts = mensagem.split(":", 3);
+            if (parts.length >= 3) {
+                int id = Integer.parseInt(parts[1]);
+                String motivo = parts[2];
+                log("[NACK Recebido] id=" + id + " motivo=" + motivo + " de " + remetente + "("+ remetente.getHostAddress() + ")");
             }
         } else {
             log("[Mensagem desconhecida] " + mensagem);
@@ -226,6 +274,18 @@ public class UDPNode {
             byte[] data = ack.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, ipDestino, portaDestino);
             socket.send(packet);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void sendNack(int id, String motivo, InetAddress destino, int porta, DatagramSocket socket) {
+        try {
+            String nack = "NACK:" + id + ":" + motivo;
+            byte[] data = nack.getBytes();
+            DatagramPacket packet = new DatagramPacket(data, data.length, destino, porta);
+            socket.send(packet);
+            log("[NACK enviado] id=" + id + " motivo=" + motivo + " para " + destino + " (" + destino.getHostAddress() + ")");
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -330,12 +390,70 @@ public class UDPNode {
                     seq++;
                     Thread.sleep(50);
                 }
+                
+                while (true) {
+                    // Verifica se ainda há CHUNKs pendentes desse ID que estão ativos
+                    boolean aindaTemChunkAtivo = chunksPendentes.keySet().stream()
+                        .filter(k -> k.startsWith("CHUNK-" + id + "-"))
+                        .anyMatch(k -> {
+                            int tent = tentativasEnvioChunk.getOrDefault(k, 0);
+                            return tent < MAX_TENTATIVAS;
+                        });
+                
+                    if (!aindaTemChunkAtivo) break;
+                
+                    Thread.sleep(100); // espera antes de checar novamente
+                }
+                boolean falhou = chunksPendentes.keySet().stream().anyMatch(k -> k.startsWith("CHUNK-" + id + "-"));
+                if (falhou) {
+                    log("[ERRO] Não foi possível enviar todos os CHUNKs (id=" + id + "). END será abortado.");
+                    return;
+                }
+
+                String hash = calcularHashArquivo(file); 
+                String mensagemEnd = "END:" + id + ":" + hash + ":" + deviceName;
+                tipoMensagemEnviada.put(id + ":-1", "END");
+                byte[] dadosEnd = mensagemEnd.getBytes();
+                DatagramPacket packetEnd = new DatagramPacket(dadosEnd, dadosEnd.length, device.getIpAddress(), device.getPort());
+                socket.send(packetEnd);
+                log("[END enviado] id=" + id + " hash=" + hash + " para " + device.getName() + "(" + device.getIpAddress() + ")");
+
+                // Aguarda ACK do END
+                int tentativa = 0;
+                while (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false) && tentativa < 20) {
+                    Thread.sleep(100); 
+                    tentativa++;
+                }
+                if (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false)) {
+                    log("[AVISO] Não foi possível confirmar se " + destino + "(" + deviceManager.getDevice(destino) + ") validou o arquivo (ACK de END não recebido)");
+                    return;
+                }
             } catch (IOException | InterruptedException e) {
                 e.printStackTrace();
             }
 
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private static String calcularHashArquivo(File file) {
+        try (InputStream in = new FileInputStream(file)) {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = in.read(buffer)) != -1) {
+                digest.update(buffer, 0, bytesRead);
+            }
+            byte[] hashBytes = digest.digest();
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashBytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "erro";
         }
     }
 
