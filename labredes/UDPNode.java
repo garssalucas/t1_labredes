@@ -102,11 +102,12 @@ public class UDPNode {
                     int seq = Integer.parseInt(partes[2]);
                     String destino = partes[3];
     
-                    String ackKey = "ACK-" + id + "-" + seq;
+                    String referencia = tipoMensagemEnviada.getOrDefault(id + ":" + seq, "DESCONHECIDO");
+                    String chaveAck = "ACK-" + referencia + "-" + id + "-" + seq;
                     long tempoEnviado = tempoEnvioChunk.getOrDefault(chave, 0L);
                     int tentativas = tentativasEnvioChunk.getOrDefault(chave, 0);
 
-                    if (!acksRecebidos.getOrDefault(ackKey, false)) {
+                    if (!acksRecebidos.getOrDefault(chaveAck, false)) {
                         if (tentativas >= MAX_TENTATIVAS) {
                             log("[ERRO] Falha ao enviar CHUNK id=" + id + " seq=" + seq + " após " + MAX_TENTATIVAS + " tentativas para " + destino + "(" + deviceManager.getDevice(destino).getIpAddress() + ")");
                             chunksPendentes.remove(chave);
@@ -163,9 +164,9 @@ public class UDPNode {
                 int id = Integer.parseInt(parts[1]);
                 int seq = Integer.parseInt(parts[2]);
                 String senderName = parts[3];
-                String chaveAck = "ACK-" + id + "-" + seq;
-                acksRecebidos.put(chaveAck, true);
                 String referencia = tipoMensagemEnviada.getOrDefault(id + ":" + seq, "DESCONHECIDO");
+                String chaveAck = "ACK-" + referencia + "-" + id + "-" + seq;
+                acksRecebidos.put(chaveAck, true);
                 log("[ACK Recebido] " + referencia + " id=" + id + " seq=" + seq + " de " + senderName + " (" + remetente.getHostAddress() + ")");
             }
         } else if (mensagem.startsWith("FILE:")) {
@@ -355,11 +356,11 @@ public class UDPNode {
             log("[FILE enviado] id=" + id + " -> " + nomeArquivo + " (" + tamanho + " bytes) para " + device.getName() + "(" + device.getIpAddress() + ")");
             
             int tentativas = 0;
-            while (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false) && tentativas < 20) {
+            while (!acksRecebidos.getOrDefault("ACK-FILE-" + id + "-" + "-1", false) && tentativas < 35) {
                 Thread.sleep(100); 
                 tentativas++;
             }
-            if (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false)) {
+            if (!acksRecebidos.getOrDefault("ACK-FILE-" + id + "-" + "-1", false)) {
                 log("[ERRO] ACK do FILE id=" + id + " não recebido de " + device.getName() + "(" + device.getIpAddress() + "). Abortando envio.");
                 return;
             }
@@ -378,10 +379,11 @@ public class UDPNode {
                     byte[] dados = mensagemChunk.getBytes();
                     DatagramPacket packetChunk = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
                     tipoMensagemEnviada.put(id + ":" + seq, "CHUNK");
-                    String chave = "ACK-" + id + "-" + seq;
+                    String referencia = tipoMensagemEnviada.getOrDefault(id + ":" + seq, "DESCONHECIDO");
+                    String chaveAck = "ACK-" + referencia + "-" + id + "-" + seq;
                     chunksPendentes.put("CHUNK-" + id + "-" + seq + "-" + destino, dados);
                     tentativasEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, 0);
-                    acksRecebidos.put(chave, false);
+                    acksRecebidos.put(chaveAck, false);
                     tempoEnvioChunk.put("CHUNK-" + id + "-" + seq + "-" + destino, System.currentTimeMillis());
                     socket.send(packetChunk);
                     totalLido += lido;
@@ -420,11 +422,11 @@ public class UDPNode {
 
                 // Aguarda ACK do END
                 int tentativa = 0;
-                while (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false) && tentativa < 20) {
+                while (!acksRecebidos.getOrDefault("ACK-END-" + id + "-" + "-1", false) && tentativa < 35) {
                     Thread.sleep(100); 
                     tentativa++;
                 }
-                if (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false)) {
+                if (!acksRecebidos.getOrDefault("ACK-END-" + id + "-" + "-1", false)) {
                     log("[AVISO] Não foi possível confirmar se " + destino + "(" + deviceManager.getDevice(destino) + ") validou o arquivo (ACK de END não recebido)");
                     return;
                 }
