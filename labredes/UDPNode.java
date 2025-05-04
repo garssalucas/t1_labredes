@@ -407,10 +407,8 @@ public class UDPNode {
                     Thread.sleep(100); // espera antes de checar novamente
                 }
                 boolean falhou = chunksPendentes.keySet().stream().anyMatch(k -> k.startsWith("CHUNK-" + id + "-"));
-                if (falhou) {
-                    log("[ERRO] Não foi possível enviar todos os CHUNKs (id=" + id + "). END será abortado.");
-                    return;
-                }
+                if (falhou) log("[ERRO] Não foi possível enviar todos os CHUNKs (id=" + id + ") ");
+        
 
                 String hash = calcularHashArquivo(file); 
                 String mensagemEnd = "END:" + id + ":" + hash + ":" + deviceName;
@@ -427,7 +425,7 @@ public class UDPNode {
                     tentativa++;
                 }
                 if (!acksRecebidos.getOrDefault("ACK-END-" + id + "-" + "-1", false)) {
-                    log("[AVISO] Não foi possível confirmar se " + destino + "(" + deviceManager.getDevice(destino) + ") validou o arquivo (ACK de END não recebido)");
+                    log("[AVISO] Não foi possível confirmar se " + destino + "(" + deviceManager.getDevice(destino).getIpAddress() + ") validou o arquivo (ACK de END não recebido)");
                     return;
                 }
             } catch (IOException | InterruptedException e) {
