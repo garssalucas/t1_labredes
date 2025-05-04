@@ -35,7 +35,7 @@ public class UDPNode {
         deviceName = args[0];
 
         DatagramSocket socket = new DatagramSocket(PORT);
-        log("[" + deviceName + "] escutando na porta " + PORT);
+        log("[" + deviceName + "](" + socket.getLocalAddress().getHostAddress() + ") escutando na porta " + PORT);
 
         new Thread(() -> listen(socket)).start();
         new Thread(() -> heartbeat(socket)).start();
@@ -108,7 +108,7 @@ public class UDPNode {
 
                     if (!acksRecebidos.getOrDefault(ackKey, false)) {
                         if (tentativas >= MAX_TENTATIVAS) {
-                            log("[ERRO] Falha ao enviar CHUNK id=" + id + " seq=" + seq + " após " + MAX_TENTATIVAS + " tentativas.");
+                            log("[ERRO] Falha ao enviar CHUNK id=" + id + " seq=" + seq + " após " + MAX_TENTATIVAS + " tentativas para " + destino + "(" + deviceManager.getDevice(destino).getIpAddress() + ")");
                             chunksPendentes.remove(chave);
                             tempoEnvioChunk.remove(chave);
                             tentativasEnvioChunk.remove(chave);
@@ -122,7 +122,7 @@ public class UDPNode {
                             if (device != null) {
                                 DatagramPacket packet = new DatagramPacket(dados, dados.length, device.getIpAddress(), device.getPort());
                                 socket.send(packet);
-                                log("[RETRANSMISSÃO] CHUNK id=" + id + " seq=" + seq + " (tentativa " + (tentativas + 1) + ")");
+                                log("[RETRANSMISSÃO] CHUNK id=" + id + " seq=" + seq + " (tentativa " + (tentativas + 1) + ") para " + device.getName() + "(" + device.getIpAddress() + ")");
                             }
                         }
                     } else {
@@ -150,7 +150,7 @@ public class UDPNode {
                 String realMessage = parts[3];
 
                 if (mensagemDuplicada("TALK-" + id)) {
-                    log("[FALHA] TALK Mensagem duplicada detectada (id:" + id + ")");
+                    log("[FALHA] TALK Mensagem duplicada detectada (id:" + id + ") de " + senderName + " (" + remetente.getHostAddress() + ")");
                     return;
                 }
 
@@ -176,7 +176,7 @@ public class UDPNode {
                 long tamanho = Long.parseLong(parts[3]);
                 String nomeRemetente = parts[4];
                 if (mensagemDuplicada("FILE-" + id)) {
-                    log("[FALHA] FILE duplicado (id:" + id + ")");
+                    log("[FALHA] FILE duplicado (id:" + id + ") de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
                     return;
                 }
 
@@ -194,7 +194,7 @@ public class UDPNode {
 
                 String chave = "CHUNK-" + id + "-" + seq;
                 if (mensagemDuplicada(chave)) {
-                    log("[FALHA] CHUNK duplicado (id:" + id + ", seq:" + seq + ")");
+                    log("[FALHA] CHUNK duplicado (id:" + id + ", seq:" + seq + ") de " + nomeRemetente + " (" + remetente.getHostAddress() + ")");
                     return;
                 }
 
@@ -264,7 +264,7 @@ public class UDPNode {
             byte[] data = mensagemCompleta.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
-            log("[TALK Enviado] id=" + id + " para " + device.getName());
+            log("[TALK Enviado] id=" + id + " para " + device.getName() + " (" + device.getIpAddress() + ")");
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -292,7 +292,7 @@ public class UDPNode {
             DatagramPacket packet = new DatagramPacket(data, data.length, device.getIpAddress(), device.getPort());
             socket.send(packet);
 
-            log("[FILE enviado] id=" + id + " -> " + nomeArquivo + " (" + tamanho + " bytes)");
+            log("[FILE enviado] id=" + id + " -> " + nomeArquivo + " (" + tamanho + " bytes) para " + device.getName() + "(" + device.getIpAddress() + ")");
             
             int tentativas = 0;
             while (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false) && tentativas < 20) {
@@ -300,7 +300,7 @@ public class UDPNode {
                 tentativas++;
             }
             if (!acksRecebidos.getOrDefault("ACK-" + id + "-" + "-1", false)) {
-                log("[ERRO] ACK do FILE id=" + id + " não recebido. Abortando envio.");
+                log("[ERRO] ACK do FILE id=" + id + " não recebido de " + device.getName() + "(" + device.getIpAddress() + "). Abortando envio.");
                 return;
             }
 
@@ -326,7 +326,7 @@ public class UDPNode {
                     socket.send(packetChunk);
                     totalLido += lido;
                     int percentual = (int) ((100.0 * totalLido) / tamanho);
-                    log("[CHUNK enviado] id=" + id + " seq=" + seq + " (" + percentual + "% enviado)");
+                    log("[CHUNK enviado] id=" + id + " seq=" + seq + " (" + percentual + "% enviado) para " + device.getName() + "(" + device.getIpAddress() + ")");
                     seq++;
                     Thread.sleep(50);
                 }
