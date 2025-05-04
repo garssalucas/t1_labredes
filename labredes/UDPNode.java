@@ -258,11 +258,12 @@ public class UDPNode {
                 }
             }
         } else if (mensagem.startsWith("NACK:")) {
-            String[] parts = mensagem.split(":", 3);
-            if (parts.length >= 3) {
+            String[] parts = mensagem.split(":", 4);
+            if (parts.length >= 4) {
                 int id = Integer.parseInt(parts[1]);
                 String motivo = parts[2];
-                log("[NACK Recebido] id=" + id + " motivo=" + motivo + " de " + remetente + "("+ remetente.getHostAddress() + ")");
+                String nomeRemetente = parts[3];
+                log("[NACK Recebido] END id=" + id + " motivo=" + motivo + " de " + nomeRemetente + "("+ remetente.getHostAddress() + ")");
             }
         } else {
             log("[Mensagem desconhecida] " + mensagem);
@@ -282,11 +283,11 @@ public class UDPNode {
 
     private static void sendNack(int id, String motivo, InetAddress destino, int porta, DatagramSocket socket) {
         try {
-            String nack = "NACK:" + id + ":" + motivo;
+            String nack = "NACK:" + id + ":" + motivo + ":" + deviceName;
             byte[] data = nack.getBytes();
             DatagramPacket packet = new DatagramPacket(data, data.length, destino, porta);
             socket.send(packet);
-            log("[NACK enviado] id=" + id + " motivo=" + motivo + " para " + destino + " (" + destino.getHostAddress() + ")");
+            //log("[NACK enviado] id=" + id + " motivo=" + motivo + " para " + " (" + destino.getHostAddress() + ")");
         } catch (Exception e) {
             e.printStackTrace();
         }
