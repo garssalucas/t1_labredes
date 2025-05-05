@@ -33,9 +33,9 @@ public class UDPNode {
             return;
         }
         deviceName = args[0];
-
+        InetAddress localIp = InetAddress.getLocalHost();
         DatagramSocket socket = new DatagramSocket(PORT);
-        log("[" + deviceName + "](" + socket.getLocalAddress().getHostAddress() + ") escutando na porta " + PORT);
+        log("[" + deviceName + "](" + localIp.getHostAddress() + ") escutando na porta " + PORT);
 
         new Thread(() -> listen(socket)).start();
         new Thread(() -> heartbeat(socket)).start();
@@ -132,7 +132,7 @@ public class UDPNode {
                         tentativasEnvioChunk.remove(chave);
                     }
                 }
-                Thread.sleep(5000);
+                Thread.sleep(200);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -142,7 +142,8 @@ public class UDPNode {
     private static void processarMensagem(String mensagem, InetAddress remetente, int porta, DatagramSocket socket) {
         if (mensagem.startsWith("HEARTBEAT:")) {
             String nome = mensagem.substring(10);
-            deviceManager.addOrUpdateDevice(nome, new Device(nome, remetente, porta));
+            boolean novo = deviceManager.addOrUpdateDevice(nome, new Device(nome, remetente, porta));
+            if (novo) log("[Novo dispositivo] " + nome + " (" + remetente.getHostAddress() + ")");
         } else if (mensagem.startsWith("TALK:")) {
             String[] parts = mensagem.split(":", 4);
             if (parts.length >= 4) {

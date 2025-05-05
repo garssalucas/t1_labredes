@@ -6,12 +6,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public class DeviceManager {
     private Map<String, Device> devices = new ConcurrentHashMap<>();
 
-    public void addOrUpdateDevice(String name, Device device) {
+    public boolean addOrUpdateDevice(String name, Device device) {
         if (devices.containsKey(name)) {
             devices.get(name).updateLastSeen();
+            return false; // já existia
         } else {
             devices.put(name, device);
-            System.out.println("[Novo dispositivo] " + name + " (" + device.getIpAddress().getHostAddress() + ")");
+            return true; // é novo!
         }
     }
 
@@ -33,6 +34,14 @@ public class DeviceManager {
 
     public void removeInactiveDevices() {
         long agora = System.currentTimeMillis();
-        devices.values().removeIf(device -> (agora - device.getLastSeen()) > 10000); // mais de 10s inativo
+        Iterator<Map.Entry<String, Device>> it = devices.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Device> entry = it.next();
+            Device device = entry.getValue();
+            if (agora - device.getLastSeen() > 10_000) { // 10 segundos
+                System.out.println("[Dispositivo desconectado] " + entry.getKey() + " (" + device.getIpAddress().getHostAddress() + ")");
+                it.remove();
+            }
+        }
     }
 }
